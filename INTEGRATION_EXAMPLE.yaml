@@ -1,0 +1,48 @@
+# Example: How to integrate AQTra tariffs into your main AQTra JPS package
+# 
+# Add this to your main AQTra product JPS package to automatically install
+# tariffs when the product is installed
+
+type: install
+name: AQTra Product
+# ... your other settings ...
+
+onInstall:
+  # Install tariffs first (before installing the product)
+  - installTariffs
+  # ... your other installation steps ...
+  - installProduct
+  # ... etc ...
+
+actions:
+  installTariffs:
+    jps: add_aqtra_grids.yaml
+    settings:
+      hoster: true
+      allResellers: false
+    # When using 'jps:' parameter, the JPS package is automatically installed
+    # No script needed - Jelastic handles the installation automatically
+
+  installProduct:
+    # ... your product installation logic ...
+    # Make sure to set billing options when creating nodes:
+    script: |
+      # Example: Create node with AQTra license billing
+      var resp = jelastic.env.control.AddNode({
+        envName: envName,
+        nodeType: "docker",
+        nodeGroup: "aqtra",
+        # ... other node parameters ...
+      });
+      
+      if (resp.result != 0) return resp;
+      
+      # Set billing options to enable license billing
+      var billingOptions = [{ name: "aqtra", value: "1" }];
+      resp = jelastic.environment.billing.SetOptions({
+        envName: envName,
+        nodeGroup: "aqtra",
+        billingOptions: billingOptions
+      });
+      
+      return resp;

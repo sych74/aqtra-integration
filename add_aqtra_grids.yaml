@@ -1,0 +1,382 @@
+type: install
+name: Add AQTra Grid Based Tariffs
+description: Add AQTra Grids and Options Based Tariffs with instance size-based pricing
+
+globals:
+  UPDATE_SCRIPT_NAME: add-aqtra-grid-based-tariffs
+
+settings:
+  fields:
+    - type: checkbox
+      caption: Add tariffs to hoster
+      name: hoster
+      value: true
+    - type: checkbox
+      caption: Add tariffs to all resellers
+      name: allResellers
+      value: true
+    - type: text
+      caption: Tariffs
+      name: tariffs
+      height: 300px
+      value: |
+        [
+          {
+            "name": "AQTra License Tariff",
+            "uniqueName": "aqtra-license-tariff",
+            "strategy": "GRADUATED",
+            "keyword": "default",
+            "tiers": [
+              {
+                "free": 0,
+                "value": 1,
+                "currencyPrice": 0.00043
+              },
+              {
+                "free": 0,
+                "value": 8,
+                "currencyPrice": 0.00043
+              },
+              {
+                "free": 0,
+                "value": 15,
+                "currencyPrice": 0.00043
+              },
+              {
+                "free": 0,
+                "value": 30,
+                "currencyPrice": 0.00042
+              },
+              {
+                "free": 0,
+                "value": 60,
+                "currencyPrice": 0.00041
+              },
+              {
+                "free": 0,
+                "value": 120,
+                "currencyPrice": 0.00041
+              },
+              {
+                "free": 0,
+                "value": 240,
+                "currencyPrice": 0.00040
+              }
+            ]
+          }
+        ]
+
+    - type: text
+      caption: Tariff Options
+      name: options
+      height: 150px
+      value: |
+        [{
+         "name": "aqtra",
+         "displayName": "AQTra License",
+         "description": "AQTra license billing based on instance size (cloudlets)"
+        }]
+    - type: text
+      caption: Tariff Grids
+      name: grids
+      height: 200px
+      value: |
+        [
+          {
+            "name": "aqtra_license_grid",
+            "displayName": "AQTra License Tariff Grid",
+            "description": "AQTra license billing based on instance size (cloudlets)",
+            "items": [
+              {
+                "name": "aqtra",
+                "displayName": "AQTra License",
+                "options": [
+                  {
+                    "name": "aqtra",
+                    "value": "1"
+                  }
+                ],
+                "plan": {
+                  "origUniqName": "aqtra-license-tariff",
+                  "uniqueName": "aqtra-license-tariff"
+                }
+              }
+            ]
+          }
+        ]
+
+onInstall:
+  - if (!${settings.hoster} &&  !${settings.allResellers}):
+      return:
+        type: warning
+        message: |
+          WARNING: nothing todo, you need to check atleast one of options
+  - system.service.GetVersion
+  - set:
+      version: ${response.version}.${response.build}
+  - if ('${fn.compare([this.version], 5.9.2)}' == -1):
+      return:
+        type: warning
+        message: |
+          WARNING: not compatible version
+  - addUpdateScript
+  - addOptions
+  - removeUpdateScript
+
+actions:
+  addUpdateScript:
+    updateScript: |
+      //@auth
+
+      import com.hivext.api.Response;
+
+      function sync(session, tariffs, options, grids, reseller) {
+          var response = syncTariffs(session, false, tariffs, reseller);
+          if (response.result != 0) return response;
+
+          response = syncOptions(session, true, options, reseller);
+          if (response.result != 0) return response;
+
+          response = syncGrids(session, true, grids, reseller);
+          if (response.result != 0) return response;
+
+          jelastic.marketplace.console.WriteLog("Attaching Grids to Pricing Models...");
+          response = attachGrids(session, true, grids, reseller);
+          if (response.result != 0) return response;
+
+          return { result: 0 };
+      }
+
+      function attachGrids(session, isReseller, grids, reseller) {
+
+          var appid = "cluster";
+
+          //get pricing models
+          var resp = jelastic.billing.pricing.GetPricingModelsInner({
+              appid: appid,
+              session: session
+          });
+          if (resp.result != 0) return resp;
+
+          var pricingModels = resp.array;
+
+          for (var i = 0, n = pricingModels.length; i < n; i++) {
+              if (!reseller && pricingModels[i].reseller) continue;
+              jelastic.marketplace.console.WriteLog("Condition ![" + reseller + "] && " + pricingModels[i].reseller + " = " + (!reseller && pricingModels[i].reseller));
+              jelastic.marketplace.console.WriteLog("PM: [" + pricingModels[i] + "] ");
+
+              var pricingName = pricingModels[i].uniqueName;
+              var tg = pricingModels[i].tariffGrids;
+
+              for (var j = 0, l = grids.length; j < l; j++) {
+                  var grid = grids[j];
+
+                  jelastic.marketplace.console.WriteLog("Grid:" + grid);
+
+                  var isAlreadyAttached = false;
+                  if (tg) {
+                      for (let g of tg) {
+                          if (g.name == grid.name) {
+                              isAlreadyAttached = true;
+                              jelastic.marketplace.console.WriteLog("Grid " + grid.name + " is already attached to [" + pricingModels[i].name + "] Pricing Model.");
+                          }
+                      }
+                  }
+
+                  if (!isAlreadyAttached) {
+                      resp = jelastic.billing.pricing.AttachTariffGrid(appid, session, grid.name, pricingName)
+                      jelastic.marketplace.console.WriteLog("Attach Grid [" + grid.name + "] to " + pricingModels[i].name + " = " + resp);
+                      if (resp.result != 0) return resp;
+                  }
+              }
+          }
+
+          return { result: 0 };
+      }
+
+      function syncOptions(session, isReseller, options, reseller) {
+          var appid = "cluster";
+
+          for (let item of options) {
+              var addOptionResp = jelastic.pricing.option.Create(appid, session, item);
+              jelastic.marketplace.console.WriteLog("Add option [" + item + "] response: [" + addOptionResp + "]");
+
+              if (addOptionResp.result != Response.ERROR_TARIFF_OBJECT_EXISTS && addOptionResp.result != 0) {
+                  return addOptionResp;
+              }
+          }
+
+          return { result: 0 };
+      }
+
+      function syncGrids(session, isReseller, grids, reseller) {
+          var appid = "cluster";
+
+          for (let grid of grids) {
+              if (reseller) {
+                  //change tariff uniq name for reseller
+                  for (let item of grid.items) {
+                      item.plan.uniqueName = reseller.name + "_" + item.plan.origUniqName;
+                  }
+              }
+
+              var addGridResp = jelastic.pricing.tariff.CreateGrid(appid, session, grid);
+              jelastic.marketplace.console.WriteLog("Add Grid [" + grid + "] response: [" + addGridResp + "]");
+
+              if (addGridResp.result == Response.ERROR_TARIFF_OBJECT_EXISTS ) {
+                  addGridResp = jelastic.pricing.tariff.EditGrid(appid, session, grid);
+              }
+
+              if (addGridResp.result != 0) return addGridResp;
+          }
+
+          return { result: 0 };
+      }
+
+      function syncTariffs(session, isReseller, tariffs, reseller) {
+          for (let tariff of tariffs) {
+              var tariffUniqName = tariff.uniqueName;
+
+              if (reseller) {
+                  jelastic.marketplace.console.WriteLog("Adding tariff for reseller: [" + reseller + "]");
+                  tariffUniqName = reseller.name + "_" + tariffUniqName;
+                  jelastic.marketplace.console.WriteLog("Adding reseller tariff: [" + tariffUniqName + "]");
+              }
+
+              var addTariffResp = addTariff(session, tariff.name, tariffUniqName, tariff.strategy, tariff.secondary, tariff.tiers, tariff.minimumFee, tariff.minimumFeeResourceAmount, tariff.keyword);
+              jelastic.marketplace.console.WriteLog("Add Tariff [" + tariff + "] response: [" + addTariffResp + "]");
+
+              if (addTariffResp.result != Response.ERROR_TARIFF_OBJECT_EXISTS && addTariffResp.result != 0) {
+                  if (!(addTariffResp.result == Response.INVALID_PARAM && String(addTariffResp.error).indexOf("already exists") > -1)) {
+                    return addTariffResp;
+                  }
+              }
+          }
+
+          return { result: 0 };
+      }
+
+      function addTariff(session, name, uniqueName, strategy, secondary, tiers, minimumFee, minimumFeeResourceAmount, keyword) {
+          if (!secondary){
+              secondary = "CLOUDLETS_LIMIT"; //default
+          }
+          if (!minimumFee){
+              minimumFee = 0; //default
+          }
+          if (!minimumFeeResourceAmount){
+              minimumFeeResourceAmount = 0; //default
+          }
+
+          keyword = "default";
+
+          var tariff = {
+              name: name,
+              uniqueName: uniqueName,
+              type: "LICENCE",
+              keyword: keyword,
+              cloudletIncrement: 1,
+              strategy: strategy,
+              tiers: tiers,
+              currency: "USD",
+              strategyData: {
+                  secondary: secondary,
+                  roundingMode: "NONE",
+                  scale: 0
+              },
+              minimumFeeResourceAmount: minimumFeeResourceAmount,
+              minimumFee: minimumFee,
+              chargeOnlyRunning: true
+          };
+
+          if(strategy == 'GRADUATED') {
+            tariff.strategyData.strategyMode = 'GRADUATED';
+            tariff.strategyData.roundingMode = 'UP';
+            tariff.billableResourceScope = 'NODE';
+            tariff.freeResourceScope = 'NODE';
+            // For instance size-based pricing, we use cloudlets as the billing resource
+            tariff.strategyData.secondary = "CLOUDLETS_LIMIT";
+          }
+
+          jelastic.marketplace.console.WriteLog("addTariff " + tariff);
+          return jelastic.billing.pricing.AddTariff({
+              appid: "cluster",
+              session: session,
+              tariff: tariff
+          });
+      }
+
+      var resellerSession;
+      var targetReseller;
+
+      options = toNative(options);
+      grids = toNative(grids);
+      tariffs = toNative(tariffs);
+
+      if (typeof reseller !== "undefined") {
+           targetReseller = toNative(reseller);
+
+          var uid = targetReseller.ownerUid;
+          jelastic.marketplace.console.WriteLog("Process reseller " + uid);
+          var authResellerResp = jelastic.system.admin.SigninAsUser(uid);
+          if (authResellerResp.result != 0) return authResellerResp;
+
+          resellerSession = authResellerResp.session;
+          jelastic.marketplace.console.WriteLog("Auth Reseller response: " + authResellerResp);
+      } else {
+          jelastic.marketplace.console.WriteLog("Process hoster: Main Hoster");
+      }
+
+      return sync(resellerSession || session, tariffs, options, grids, targetReseller);
+    script: |
+      var scriptName = '${globals.UPDATE_SCRIPT_NAME}';
+      jelastic.dev.scripting.DeleteScript(scriptName);
+      resp = jelastic.dev.scripting.CreateScript(scriptName, "js", updateScript);
+      if (resp.result != 0) return resp;
+      java.lang.Thread.sleep(1000);
+      return jelastic.dev.scripting.Build(scriptName);
+
+  removeUpdateScript:
+    scriptName: ${globals.UPDATE_SCRIPT_NAME}
+    script: |
+      return jelastic.dev.scripting.DeleteScript(scriptName);
+
+  addOptions:
+    hoster: ${settings.hoster}
+    resellers: ${settings.allResellers}
+    scriptName: ${globals.UPDATE_SCRIPT_NAME}
+    o: ${settings.options}
+    t: ${settings.tariffs}
+    g: ${settings.grids}
+    script: |
+      import org.yaml.snakeyaml.Yaml;
+
+      var options = toNative(new Yaml().load(o));
+      var grids = toNative(new Yaml().load(g));
+      var tariffs = toNative(new Yaml().load(t));
+      var batch = { alias : { m : "Development.Scripting.Eval" }, global : { appid: appid, session: session }, methods: [] };
+      var response;
+
+      if (hoster) {
+          batch.methods.push({ m : { script: scriptName, params: { tariffs: tariffs, options: options, grids: grids } } });
+      }
+
+      if (resellers) {
+          response = jelastic.billing.reseller.GetAllResellers({ appid: "cluster", session: session });
+          if (response.result != 0) return response;
+
+          for (let reseller of response.array) {
+              batch.methods.push({ m : { script: scriptName, params: { tariffs: tariffs, options: options, grids: grids, reseller: reseller } } });
+          }
+      }
+
+      var batchResp = api.utils.batch.Call(appid, toJSON(batch), false);
+      if (batchResp.result != 0) return batchResp;
+
+      batchResp = batchResp.response;
+
+      for (let i = 0, n = batchResp.length; i < n; i++) {
+          response = batchResp[i].response || batchResp[i];
+          if (response.result != 0) return { result: response.result, error: response.error, responses: batchResp };
+      }
+
+      return { result: 0, data: batchResp };
